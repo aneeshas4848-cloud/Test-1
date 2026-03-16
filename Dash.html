@@ -1,0 +1,66 @@
+function renderTop5(data) {
+  const extras = getExtras(data);
+  let top5 = [];
+  const el = document.getElementById("top5Box");
+
+  if (!el) return;
+
+  // 1) Highest priority: latest SELECTED event
+  const parsedFromSelected = extractTop5FromSelectedEvent(data);
+  if (parsedFromSelected.length) {
+    top5 = parsedFromSelected;
+  }
+
+  // 2) Fallback: extras.shortlist
+  if (!top5.length && Array.isArray(extras.shortlist) && extras.shortlist.length) {
+    top5 = extras.shortlist;
+  }
+
+  // 3) Fallback: subscribed_topk event (symbols only)
+  if (!top5.length) {
+    const events = getEvents(data);
+    const subscribedEvt = [...events].reverse().find(ev => {
+      const d = ev.details || ev.data || {};
+      return d.msg === "subscribed_topk" && Array.isArray(d.symbols);
+    });
+
+    if (subscribedEvt) {
+      const d = subscribedEvt.details || subscribedEvt.data || {};
+      top5 = d.symbols.map(sym => ({ symbol: sym }));
+    }
+  }
+
+  if (!top5.length) {
+    el.innerHTML = `<div class="muted">No top-5 shortlist available for this bot.</div>`;
+    return;
+  }
+
+  const rows = top5.map((item, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td>${fmtText(item.symbol)}</td>
+      <td>${fmtText(item.bias || "--")}</td>
+      <td>${fmtNum(item.ltp)}</td>
+      <td>${fmtNum(item.pct)}</td>
+      <td>${fmtText(item.vol)}</td>
+      <td>${fmtNum(item.score)}</td>
+    </tr>
+  `).join("");
+
+  el.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Symbol</th>
+          <th>Bias</th>
+          <th>LTP</th>
+          <th>% Move</th>
+          <th>Volume</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
