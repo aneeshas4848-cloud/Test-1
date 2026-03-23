@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Algo Trading Dashboard</title>
+  <style>
+    :root{
+      --bg:#0b1220;
+      --panel:#111b31;
+      --panel-2:#0f1830;
+      --border:#243559;
+      --text:#e8eefc;
+      --muted:#9db0d9;
+      --accent:#7aa2ff;
+      --good:#37d67a;
+      --bad:#ff6b6b;
+    }
+
+    *{ box-sizing:border-box; }
+
+    body{
+      margin:0;
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+      background:linear-gradient(180deg,#0a1020,#0c1730);
+      color:var(--text);
+    }
+
+    .wrap{
+      max-width:1500px;
+      margin:0 auto;
+      padding:20px;
+    }
+
+    h1{
+      margin:0 0 4px;
+      font-size:44px;
+      letter-spacing:.4px;
+    }
+
+    .sub{
+      color:var(--muted);
+      margin-bottom:18px;
+    }
+
+    .toolbar{
+      display:flex;
+      gap:12px;
+      align-items:center;
+      flex-wrap:wrap;
+      margin-bottom:18px;
+    }
+
+    .toolbar .spacer{ flex:1; }
+
+    label{
+      color:var(--muted);
+      font-size:14px;
+    }
+
+    select, button{
+      background:#172544;
+      color:var(--text);
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 14px;
+      font-size:16px;
+    }
+
+    button{ cursor:pointer; }
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      border:1px solid var(--border);
+      background:#13203a;
+      color:var(--text);
+      border-radius:999px;
+      padding:6px 10px;
+      font-size:13px;
+    }
+
+    .live-dot{
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      background:var(--good);
+      display:inline-block;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns:1.2fr 1.2fr 1fr 1fr;
+      gap:16px;
+    }
+
+    .panel{
+      background:linear-gradient(180deg,var(--panel),var(--panel-2));
+      border:1px solid var(--border);
+      border-radius:20px;
+      padding:20px;
+      box-shadow:0 10px 24px rgba(0,0,0,.18);
+    }
+
+    .panel h3{
+      margin:0 0 12px;
+      color:#bcd0ff;
+      font-size:14px;
+      letter-spacing:1.4px;
+      text-transform:uppercase;
+    }
+
+    .big{
+      font-size:50px;
+      font-weight:800;
+      line-height:1;
+    }
+
+    .muted{ color:var(--muted); }
+    .small{ font-size:13px; }
+    .mono{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+
+    .notes{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:10px;
+    }
+
+    .badge{
+      display:inline-block;
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:700;
+      background:rgba(122,162,255,.12);
+      border:1px solid rgba(122,162,255,.35);
+      color:#d9e6ff;
+    }
+
+    .good{ color:var(--good); }
+    .bad{ color:var(--bad); }
+
+    .kv{
+      display:grid;
+      grid-template-columns:180px 1fr;
+      gap:10px 12px;
+    }
+
+    .kv div:nth-child(odd){ color:#c4d5fd; }
+    .kv div:nth-child(even){ color:var(--text); font-weight:600; }
+
+    .wide-2{ grid-column:span 2; }
+    .wide-4{ grid-column:span 4; }
+
+    table{
+      width:100%;
+      border-collapse:collapse;
+    }
+
+    th, td{
+      padding:12px 10px;
+      border-bottom:1px solid rgba(160,184,240,.16);
+      text-align:left;
+    }
+
+    th{
+      color:#bed0ff;
+      font-size:13px;
+      text-transform:uppercase;
+      letter-spacing:.8px;
+    }
+
+    .events-wrap, .json-wrap{
+      max-height:280px;
+      overflow:auto;
+      border:1px solid rgba(160,184,240,.16);
+      border-radius:14px;
+      background:#0b1430;
+    }
+
+    .json-wrap{ padding:14px; }
+
+    pre{
+      margin:0;
+      white-space:pre-wrap;
+      word-break:break-word;
+      color:#d8e5ff;
+    }
+
+    .empty{
+      color:var(--muted);
+      padding:10px 0;
+    }
+
+    @media (max-width:1200px){
+      .grid{ grid-template-columns:1fr 1fr; }
+      .wide-4,.wide-2{ grid-column:span 2; }
+    }
+
+    @media (max-width:760px){
+      h1{ font-size:34px; }
+      .grid{ grid-template-columns:1fr; }
+      .wide-4,.wide-2{ grid-column:span 1; }
+      .kv{ grid-template-columns:130px 1fr; }
+      .big{ font-size:38px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Algo Trading Dashboard</h1>
+    <div class="sub">Paper trading monitor for NIFTY200 / NIFTY500 / ATR / TOP5 / Pullback bots</div>
+
+    <div class="toolbar">
+      <label for="botSelect">Bot</label>
+      <select id="botSelect">
+        <option value="data/dashboard_n200.json">NIFTY200</option>
+        <option value="data/dashboard_n500.json">NIFTY500</option>
+        <option value="data/dashboard_n200_atr.json">NIFTY200 ATR</option>
+        <option value="data/dashboard_n500_atr.json">NIFTY500 ATR</option>
+        <option value="data/dashboard_n200_top5.json" selected>NIFTY200 TOP5</option>
+        <option value="data/dashboard_n500_top5.json">NIFTY500 TOP5</option>
+        <option value="data/dashboard_n200_top5_pullback.json">NIFTY200 TOP5 Pullback</option>
+        <option value="data/dashboard_n500_top5_pullback.json">NIFTY500 TOP5 Pullback</option>
+        <option value="data/dashboard_n200_top5_atr.json">NIFTY200 TOP5 ATR</option>
+      </select>
+
+      <button id="autoBtn">Auto Refresh</button>
+
+      <select id="refreshSelect">
+        <option value="3000">3 sec</option>
+        <option value="5000" selected>5 sec</option>
+        <option value="10000">10 sec</option>
+        <option value="15000">15 sec</option>
+      </select>
+
+      <button id="reloadBtn">Reload Now</button>
+
+      <span class="pill">
+        <span class="live-dot"></span>
+        <span id="liveText">Live</span>
+      </span>
+
+      <div class="spacer"></div>
+      <span class="muted small mono" id="filePath"></span>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h3>Mode</h3>
+        <div class="big" id="mode">--</div>
+        <div class="muted small" id="fileName">--</div>
+      </div>
+
+      <div class="panel">
+        <h3>Current monitored basket</h3>
+        <div style="font-size:40px;font-weight:800" id="basketTitle">Top-5 symbols</div>
+        <div class="small muted" id="basketSubtitle">Latest shortlist from the most recent scan</div>
+        <div class="notes" id="basketNotes"></div>
+      </div>
+
+      <div class="panel">
+        <h3>Daily PnL</h3>
+        <div class="big" id="dailyPnl">0.00</div>
+        <div class="small muted" id="capital">Capital: --</div>
+      </div>
+
+      <div class="panel">
+        <h3>Trade Count</h3>
+        <div class="big" id="tradeCount">0</div>
+        <div class="small muted" id="lastUpdated">Last updated: --</div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Current scan details</h3>
+        <div class="kv" id="scanDetails"></div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Top-5 monitored symbols</h3>
+        <div id="top5Wrap"></div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Open position / latest position</h3>
+        <div id="openPositionWrap" class="empty">No open position and no latest position yet.</div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Latest completed trade</h3>
+        <div id="latestTradeWrap" class="empty">No completed trades yet.</div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Performance summary</h3>
+        <div class="kv" id="perfSummary"></div>
+      </div>
+
+      <div class="panel wide-2">
+        <h3>Bot notes</h3>
+        <div class="notes" id="botNotes"></div>
+      </div>
+
+      <div class="panel wide-4">
+        <h3>Recent events</h3>
+        <div class="events-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="eventsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel wide-4">
+        <h3>Raw JSON</h3>
+        <div class="json-wrap">
+          <pre id="rawJson">{}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    let autoRefresh = true;
+    let timer = null;
+
+    function fmt(v, digits = 2) {
+      if (v === null || v === undefined || v === "") return "--";
+      const n = Number(v);
+      if (Number.isNaN(n)) return String(v);
+      return n.toFixed(digits);
+    }
+
+    function fmtInt(v) {
+      if (v === null || v === undefined || v === "") return "--";
+      const n = Number(v);
+      if (Number.isNaN(n)) return String(v);
+      return Math.round(n).toString();
+    }
+
+    function tsShort(ts) {
+      if (!ts) return "--";
+      return String(ts).replace("T", " ").slice(0, 19);
+    }
+
+    function badge(text) {
+      return `<span class="badge">${text}</span>`;
+    }
+
+    function getLatestSelectedEvent(events) {
+      return [...(events || [])].find(e => e.event === "SELECTED") || null;
+    }
+
+    function getLatestExit(events) {
+      return [...(events || [])].find(e => e.event === "EXIT") || null;
+    }
+
+    function getOpenPosition(events) {
+      let open = null;
+      for (const e of events || []) {
+        if (e.event === "ENTRY") {
+          open = e;
+        } else if (e.event === "EXIT") {
+          open = null;
+        }
+      }
+      return open;
+    }
+
+    function findEntryForExit(events, exitEvt) {
+      if (!exitEvt) return null;
+      const arr = [...(events || [])].filter(e => e.ts <= exitEvt.ts);
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i].event === "ENTRY" && arr[i].symbol === exitEvt.symbol) {
+          return arr[i];
+        }
+      }
+      return null;
+    }
+
+    function renderKV(target, pairs) {
+      target.innerHTML = pairs.map(([k, v]) => `<div>${k}</div><div>${v}</div>`).join("");
+    }
+
+    function renderTop5(shortlist) {
+      if (!shortlist || !shortlist.length) {
+        return `<div class="empty">No top-5 shortlist available for this bot.</div>`;
+      }
+
+      const rows = shortlist.map((s, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${s.symbol || "--"}</td>
+          <td>${s.bias || "--"}</td>
+          <td>${fmt(s.ltp)}</td>
+          <td>${fmt(s.pct)}</td>
+          <td>${fmtInt(s.vol)}</td>
+          <td>${fmt(s.score)}</td>
+        </tr>
+      `).join("");
+
+      return `
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Symbol</th>
+              <th>Bias</th>
+              <th>LTP</th>
+              <th>% Move</th>
+              <th>Volume</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
+    function renderPosition(openEvt) {
+      if (!openEvt) {
+        return `<div class="empty">No open position right now.</div>`;
+      }
+
+      const d = openEvt.details || {};
+
+      return `
+        <div class="kv">
+          <div>Symbol</div><div>${openEvt.symbol || "--"}</div>
+          <div>Side</div><div>${openEvt.side || d.side || "--"}</div>
+          <div>Entry Time</div><div class="mono">${tsShort(openEvt.ts)}</div>
+          <div>Entry Price</div><div>${fmt(openEvt.price)}</div>
+          <div>Qty</div><div>${fmtInt(openEvt.qty)}</div>
+          <div>Stop Loss</div><div>${fmt(d.stop_loss)}</div>
+          <div>Profit Lock</div><div>${fmt(d.profit_lock_pct)}%</div>
+        </div>
+      `;
+    }
+
+    function renderLatestTrade(exitEvt, entryEvt) {
+      if (!exitEvt) {
+        return `<div class="empty">No completed trades yet.</div>`;
+      }
+
+      const pnl = Number(exitEvt.details?.pnl ?? 0);
+      const pnlClass = pnl >= 0 ? "good" : "bad";
+
+      return `
+        <div class="kv">
+          <div>Symbol</div><div>${exitEvt.symbol || "--"}</div>
+          <div>Side</div><div>${exitEvt.side || entryEvt?.side || "--"}</div>
+          <div>Entry Price</div><div>${fmt(entryEvt?.price)}</div>
+          <div>Exit Price</div><div>${fmt(exitEvt.price)}</div>
+          <div>Qty</div><div>${fmtInt(exitEvt.qty)}</div>
+          <div>PnL</div><div class="${pnlClass}">${fmt(pnl)}</div>
+          <div>Entry Time</div><div class="mono">${tsShort(entryEvt?.ts)}</div>
+          <div>Exit Time</div><div class="mono">${tsShort(exitEvt.ts)}</div>
+          <div>Reason</div><div>${exitEvt.details?.reason || "--"}</div>
+        </div>
+      `;
+    }
+
+    function renderEvents(events) {
+      const body = $("eventsBody");
+      if (!events || !events.length) {
+        body.innerHTML = `<tr><td colspan="3" class="muted">No events yet.</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = events.slice(0, 50).map(e => `
+        <tr>
+          <td class="mono">${tsShort(e.ts)}</td>
+          <td>${e.event}</td>
+          <td class="mono">${JSON.stringify(e.details || {})}</td>
+        </tr>
+      `).join("");
+    }
+
+    function updateDashboard(data, path) {
+      $("filePath").textContent = path;
+      $("fileName").textContent = path;
+      $("mode").textContent = data?.session?.mode || "--";
+      $("dailyPnl").textContent = fmt(data?.stats?.realized_pnl ?? 0);
+      $("capital").textContent = `Capital: ${fmtInt(data?.session?.capital)}`;
+      $("tradeCount").textContent = fmtInt(data?.stats?.trades ?? 0);
+      $("lastUpdated").textContent = `Last updated: ${data?.updated_at || "--"}`;
+      $("rawJson").textContent = JSON.stringify(data, null, 2);
+
+      const events = data?.events || [];
+      const selected = getLatestSelectedEvent(events);
+      const details = selected?.details || {};
+      const shortlist = details.shortlist || [];
+
+      const openPosition = getOpenPosition(events);
+      const latestExit = getLatestExit(events);
+      const entryForExit = findEntryForExit(events, latestExit);
+
+      $("basketTitle").textContent = shortlist.length ? `${shortlist.length} monitored symbols` : "Top-5 symbols";
+      $("basketSubtitle").textContent = "Latest shortlist refreshed from the most recent SELECTED event";
+
+      $("basketNotes").innerHTML = [
+        details.mode ? badge(details.mode) : "",
+        details.strategy ? badge(`Strategy: ${details.strategy}`) : "",
+        details.market_trend ? badge(`Market: ${details.market_trend}`) : "",
+        details.top_k_monitor ? badge(`Top K: ${details.top_k_monitor}`) : "",
+        details.symbol_cooldown_min ? badge(`Cooldown: ${details.symbol_cooldown_min}m`) : "",
+        details.stop_loss_pct ? badge(`SL: ${(Number(details.stop_loss_pct) * 100).toFixed(2)}%`) : "",
+        badge("Exit model: Profit ladder")
+      ].join("");
+
+      renderKV($("scanDetails"), [
+        ["Watchlist", details.watchlist || "--"],
+        ["Mode", details.mode || "--"],
+        ["Strategy", details.strategy || "--"],
+        ["Scan Interval", details.scan_interval_sec ? `${details.scan_interval_sec}s` : "--"],
+        ["Focus Candles", details.max_focus_candles ?? "--"],
+        ["Rescan Interval", details.rescan_interval_min ? `${details.rescan_interval_min} min` : "--"],
+        ["Top K Monitor", details.top_k_monitor ?? "--"],
+        ["EMA Gap %", details.ema_gap_pct ? (Number(details.ema_gap_pct) * 100).toFixed(3) : "--"],
+        ["Stop Loss %", details.stop_loss_pct ? (Number(details.stop_loss_pct) * 100).toFixed(2) : "--"],
+        ["Market Trend", details.market_trend || "--"],
+        ["Pullback Max from EMA %", details.pullback_max_from_fast_ema_pct ? (Number(details.pullback_max_from_fast_ema_pct) * 100).toFixed(2) : "--"],
+        ["Max Entry Move %", details.max_entry_move_pct ?? "--"]
+      ]);
+
+      $("top5Wrap").innerHTML = renderTop5(shortlist);
+      $("openPositionWrap").innerHTML = renderPosition(openPosition);
+      $("latestTradeWrap").innerHTML = renderLatestTrade(latestExit, entryForExit);
+
+      const trades = Number(data?.stats?.trades || 0);
+      const wins = Number(data?.stats?.wins || 0);
+      const pnl = Number(data?.stats?.realized_pnl || 0);
+
+      renderKV($("perfSummary"), [
+        ["Completed Trades", fmtInt(trades)],
+        ["Wins", fmtInt(wins)],
+        ["Losses", fmtInt(data?.stats?.losses ?? 0)],
+        ["Win Rate", trades ? ((wins / trades) * 100).toFixed(2) + "%" : "--"],
+        ["Total PnL", fmt(pnl)],
+        ["Avg Trade PnL", trades ? fmt(pnl / trades) : "0.00"],
+        ["Best Trade", latestExit && Number(latestExit.details?.pnl || 0) > 0 ? fmt(latestExit.details?.pnl) : "0.00"],
+        ["Worst Trade", latestExit && Number(latestExit.details?.pnl || 0) < 0 ? fmt(latestExit.details?.pnl) : "0.00"]
+      ]);
+
+      $("botNotes").innerHTML = [
+        badge("Selected symbol card removed for Top-5 bots"),
+        badge("Top-5 table always refreshes from latest SELECTED event"),
+        badge("Open position comes from latest ENTRY without later EXIT"),
+        badge("Latest completed trade comes from most recent EXIT")
+      ].join("");
+
+      renderEvents(events);
+    }
+
+    async function loadData() {
+      const path = $("botSelect").value;
+      try {
+        const res = await fetch(`${path}?t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        updateDashboard(data, path);
+        $("liveText").textContent = "Live";
+      } catch (err) {
+        console.error(err);
+        $("liveText").textContent = "Load failed";
+      }
+    }
+
+    function schedule() {
+      if (timer) clearInterval(timer);
+      if (autoRefresh) {
+        timer = setInterval(loadData, Number($("refreshSelect").value));
+      }
+    }
+
+    $("botSelect").addEventListener("change", loadData);
+    $("refreshSelect").addEventListener("change", schedule);
+    $("reloadBtn").addEventListener("click", loadData);
+    $("autoBtn").addEventListener("click", () => {
+      autoRefresh = !autoRefresh;
+      $("autoBtn").textContent = autoRefresh ? "Auto Refresh" : "Auto Refresh Off";
+      schedule();
+    });
+
+    loadData();
+    schedule();
+  </script>
+</body>
+</html>
