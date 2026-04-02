@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional, Literal
+
+
+Side = Literal["LONG", "SHORT"]
+ProfitLockMode = Literal["fixed", "ladder", "trailing"]
+
+
+@dataclass
+class Position:
+    side: Side
+    entry_time: datetime
+    entry_price: float
+    qty: int
+
+    stop_loss: float
+    take_profit: Optional[float] = None
+
+    # Profit lock behavior
+    profit_lock_mode: ProfitLockMode = "fixed"
+
+    # fixed mode
+    profit_lock_pct: float = 0.0
+
+    # ladder mode
+    profit_ladder_step: float = 0.01      # 1%
+    profit_ladder_max: float = 0.10       # 10%
+    profit_ladder_buffer: float = 0.002   # 0.20% buffer (prevents tiny blip exits)
+    profit_ladder_confirm_candles: int = 1  # require N candle closes below lock
+    profit_trailing_start_pct: float = 0.0,
+    profit_trailing_buffer_pct: float = 0.0035,
+    best_price: Optional[float] = None
+    
+    # Tracking
+    is_open: bool = True
+    exit_time: Optional[datetime] = None
+    exit_price: Optional[float] = None
+    exit_reason: Optional[str] = None
+
+    max_profit_pct: float = 0.0
+    ladder_breach_candle_count: int = 0
+
+    def pnl(self) -> float:
+        if self.exit_price is None:
+            return 0.0
+        if self.side == "LONG":
+            return (self.exit_price - self.entry_price) * self.qty
+        else:
+            return (self.entry_price - self.exit_price) * self.qty
+
+    def current_profit_pct(self, price: float) -> float:
+        if self.side == "LONG":
+            return (price - self.entry_price) / self.entry_price
+        else:
+            return (self.entry_price - price) / self.entry_price
+
+    def update_max_profit(self, price: float):
+        p = self.current_profit_pct(price)
+        if p > self.max_profit_pct:
+            self.max_profit_pct = p
+
+    def ladder_lock_pct(self) -> float:
+        """
+        Stepwise lock at 1%,2%,..., capped at profit_ladder_max.
+        Example: max_profit=3.7% -> lock=3%
+        """
+        step = self.profit_ladder_step
+        if step <= 0:
+            return 0.0
+        steps = int(self.max_profit_pct / step)
+        lock = steps * step
+        if lock > self.profit_ladder_max:
+            lock = self.profit_ladder_max
+        return lock
+
+
+class PaperBroker:
+    def __init__(self):
+        self.position: Optional[Position] = None
+
+    # ---------- open ----------
+    def open_long(
+        self,
+        ts: datetime,
+        price: float,
+        qty: int,
+        stop_loss: float,
+        take_profit: Optional[float] = None,
+        profit_lock_mode: ProfitLockMode = "fixed",
+        profit_lock_pct: float = 0.0,
+        profit_ladder_step: float = 0.01,
+        profit_ladder_max: float = 0.10,
+        profit_ladder_buffer: float = 0.002,
+        profit_ladder_confirm_candles: int = 1,
+        profit_trailing_start_pct: float = 0.0,
+        profit_trailing_buffer_pct: float = 0.0035,
+    ):
+        self.position = Position(
+            side="LONG",
+            entry_time=ts,
+            entry_price=float(price),
+            qty=int(qty),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit) if take_profit is not None else None,
+            profit_lock_mode=profit_lock_mode,
+            profit_lock_pct=float(profit_lock_pct),
+            profit_ladder_step=float(profit_ladder_step),
+            profit_ladder_max=float(profit_ladder_max),
+            profit_ladder_buffer=float(profit_ladder_buffer),
+            profit_ladder_confirm_candles=int(profit_ladder_confirm_candles),
+            profit_trailing_start_pct=float(profit_trailing_start_pct),
+            profit_trailing_buffer_pct=float(profit_trailing_buffer_pct),
+            best_price=float(price),
+        )
+
+    def open_short(
+        self,
+        ts: datetime,
+        price: float,
+        qty: int,
+        stop_loss: float,
+        take_profit: Optional[float] = None,
+        profit_lock_mode: ProfitLockMode = "fixed",
+        profit_lock_pct: float = 0.0,
+        profit_ladder_step: float = 0.01,
+        profit_ladder_max: float = 0.10,
+        profit_ladder_buffer: float = 0.002,
+        profit_ladder_confirm_candles: int = 1,
+        profit_trailing_start_pct: float = 0.0,
+        profit_trailing_buffer_pct: float = 0.0035,
+    ):
+        self.position = Position(
+            side="SHORT",
+            entry_time=ts,
+            entry_price=float(price),
+            qty=int(qty),
+            stop_loss=float(stop_loss),
+            take_profit=float(take_profit) if take_profit is not None else None,
+            profit_lock_mode=profit_lock_mode,
+            profit_lock_pct=float(profit_lock_pct),
+            profit_ladder_step=float(profit_ladder_step),
+            profit_ladder_max=float(profit_ladder_max),
+            profit_ladder_buffer=float(profit_ladder_buffer),
+            profit_ladder_confirm_candles=int(profit_ladder_confirm_candles),
+            profit_trailing_start_pct=float(profit_trailing_start_pct),
+            profit_trailing_buffer_pct=float(profit_trailing_buffer_pct),
+            best_price=float(price),
+        )
+
+    # ---------- close ----------
+    def close(self, ts: datetime, price: float, reason: str = "MANUAL") -> Optional[Position]:
+        if not self.position or not self.position.is_open:
+            return None
+        self.position.is_open = False
+        self.position.exit_time = ts
+        self.position.exit_price = float(price)
+        self.position.exit_reason = reason
+        closed = self.position
+        self.position = None
+        return closed
+
+    # ---------- exits ----------
+    def check_exits(self, ts: datetime, price: float, is_candle_close: bool = False) -> Optional[Position]:
+        """
+        Stop-loss / take-profit checked ALWAYS (tick-safe).
+        Profit-ladder checked ONLY on candle close when is_candle_close=True
+        to avoid tiny tick blips stopping you out.
+        """
+        p = self.position
+        if not p or not p.is_open:
+            return None
+
+        # Update favorable excursion on every tick
+        p.update_max_profit(price)
+        if p.best_price is None:
+            p.best_price = float(price)
+        else:
+            if p.side == "LONG" and price > p.best_price:
+                p.best_price = float(price)
+            if p.side == "SHORT" and price < p.best_price:
+                p.best_price = float(price)
+
+        # STOP LOSS (tick-based)
+        if p.side == "LONG" and price <= p.stop_loss:
+            return self.close(ts, price, reason="STOP_LOSS")
+        if p.side == "SHORT" and price >= p.stop_loss:
+            return self.close(ts, price, reason="STOP_LOSS")
+
+        # TAKE PROFIT (optional, tick-based)
+        if p.take_profit is not None:
+            if p.side == "LONG" and price >= p.take_profit:
+                return self.close(ts, price, reason="TAKE_PROFIT")
+            if p.side == "SHORT" and price <= p.take_profit:
+                return self.close(ts, price, reason="TAKE_PROFIT")
+
+        # Profit logic (only on candle close to avoid noise)
+        if not is_candle_close:
+            return None
+
+        cur_profit = p.current_profit_pct(price)
+
+        if p.profit_lock_mode == "fixed":
+            lock = float(p.profit_lock_pct)
+            if lock > 0 and p.max_profit_pct >= lock and cur_profit <= lock:
+                return self.close(ts, price, reason="PROFIT_LOCK")
+
+        elif p.profit_lock_mode == "ladder":
+            step = p.profit_ladder_step
+            if step <= 0:
+                return None
+
+            # Must have crossed at least 1 step
+            if p.max_profit_pct < step:
+                p.ladder_breach_candle_count = 0
+                return None
+
+            lock = p.ladder_lock_pct()
+            # Apply buffer so tiny dips don’t exit
+            effective_lock = max(0.0, lock - p.profit_ladder_buffer)
+
+            # confirmation on candle closes
+            if cur_profit <= effective_lock:
+                p.ladder_breach_candle_count += 1
+            else:
+                p.ladder_breach_candle_count = 0
+
+            need = max(1, int(p.profit_ladder_confirm_candles))
+            if p.ladder_breach_candle_count >= need:
+                return self.close(ts, price, reason="PROFIT_LADDER")
+
+        return None
