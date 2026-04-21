@@ -1,0 +1,37 @@
+//@version=5
+strategy("Buy/Sell Signal", overlay=true)
+
+// === INPUTS ===
+emaFast = input.int(9, "Fast EMA")
+emaSlow = input.int(21, "Slow EMA")
+rsiLen = input.int(14, "RSI Length")
+rsiOB = input.int(70, "RSI Overbought")
+rsiOS = input.int(30, "RSI Oversold")
+
+// === INDICATORS ===
+ema9  = ta.ema(close, emaFast)
+ema21 = ta.ema(close, emaSlow)
+rsi   = ta.rsi(close, rsiLen)
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+
+// === CONDITIONS ===
+buySignal = ta.crossover(ema9, ema21) and rsi < 60 and macdLine > signalLine
+sellSignal = ta.crossunder(ema9, ema21) and rsi > 40 and macdLine < signalLine
+
+// === PLOTS ===
+plot(ema9,  "EMA 9",  color=color.blue,  linewidth=1)
+plot(ema21, "EMA 21", color=color.orange, linewidth=1)
+
+// === SIGNALS ON CHART ===
+plotshape(buySignal,  title="BUY",  location=location.belowbar, 
+  color=color.green, style=shape.labelup,   text="BUY",  size=size.normal)
+plotshape(sellSignal, title="SELL", location=location.abovebar, 
+  color=color.red,   style=shape.labeldown, text="SELL", size=size.normal)
+
+// === BACKGROUND COLOR ===
+bgcolor(buySignal  ? color.new(color.green, 85) : na)
+bgcolor(sellSignal ? color.new(color.red,   85) : na)
+
+// === ALERTS ===
+alertcondition(buySignal,  "BUY Signal",  "BUY - IDFCFIRSTB")
+alertcondition(sellSignal, "SELL Signal", "SELL - IDFCFIRSTB")
