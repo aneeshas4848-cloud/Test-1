@@ -1,0 +1,383 @@
+import json
+import uuid
+import ssl
+import math
+import pathlib
+import time as time_mod
+from datetime import datetime, timezone, time, timedelta
+from typing import Dict, Optional, Tuple, List, Any
+
+import requests
+import certifi
+import websocket
+
+from market import MarketDataFeed_pb2
+from market.candle_builder import CandleBuilder
+from strategy.ema_crossover import EMACrossoverStrategy
+from risk.risk_manager import RiskManager, RiskConfig
+from execution.paper_broker_parallel_trailing import PaperBroker
+from reporting.trade_reporter import TradeReporter
+
+
+WATCHLIST_JSON = pathlib.Path("data/nifty200_watchlist.json")
+
+CAPITAL = 300000
+CAPITAL_PER_TRADE = 100000
+MAX_PARALLEL_TRADES = 3
+
+RISK_PER_TRADE_PCT = 0.01
+MAX_DAILY_LOSS_PCT = 0.03
+MAX_TRADES_PER_DAY = 3
+
+TIMEFRAME_MINUTES = 5
+STOP_LOSS_PCT = 0.008
+
+BATCH_SIZE = 150
+TOP_K_MONITOR = 25
+
+MIN_LTP = 20.0
+MAX_LTP = 3000.0
+MIN_VOLUME = 100000
+MIN_AFFORDABLE_SHARES = 1
+MAX_ENTRY_MOVE_PCT = 1.8
+
+SCAN_INTERVAL_SEC = 60
+MAX_FOCUS_CANDLES = 5
+RESCAN_INTERVAL_MIN = 20
+SYMBOL_COOLDOWN_MIN = 30
+CHOPPY_STREAK_THRESHOLD = 2
+CHOPPY_PAUSE_MIN = 5
+
+SHORT_SKIP_IF_TOO_EXTENDED_PCT = -4.8
+SHORT_RECENT_BOUNCE_PCT = 0.003
+
+DEFAULT_TRAILING_START_PCT = 0.007
+DEFAULT_TRAILING_BUFFER_PCT = 0.002
+
+INDEX_KEY = "NSE_INDEX|Nifty 50"
+MARKET_TREND_THRESHOLD = 0.001
+TRENDING_REGIME_PCT = 0.008
+CHOPPY_REGIME_PCT = 0.002
+
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+SKIP_FIRST_MINUTES = 10
+
+NO_NEW_ENTRIES_AFTER_IST = time(12, 30)
+FORCE_EXIT_FROM_IST = time(15, 20)
+STOP_BOT_AFTER_IST = time(15, 30)
+
+WS_PING_INTERVAL = 30
+WS_PING_TIMEOUT = 20
+WS_RECONNECT_DELAY_SEC = 5
+WS_MAX_RETRIES_PER_SESSION = 5
+
+
+def now_ist() -> datetime:
+    return datetime.now(timezone.utc).astimezone(IST_TZ)
+
+
+def ist_time_now() -> time:
+    return now_ist().time()
+
+
+def trading_day():
+    return now_ist().date()
+
+
+def in_early_skip_window_ist() -> bool:
+    ist = now_ist()
+    market_open = ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    return ist < market_open + timedelta(minutes=SKIP_FIRST_MINUTES)
+
+
+def market_stopped() -> bool:
+    return ist_time_now() >= STOP_BOT_AFTER_IST
+
+
+def no_new_entries_now() -> bool:
+    return ist_time_now() >= NO_NEW_ENTRIES_AFTER_IST
+
+
+def force_exit_now() -> bool:
+    return ist_time_now() >= FORCE_EXIT_FROM_IST
+
+
+def load_token() -> str:
+    return pathlib.Path("access_token.txt").read_text(encoding="utf-8").strip()
+
+
+def load_watchlist_symbol_to_key() -> Dict[str, str]:
+    if not WATCHLIST_JSON.exists():
+        raise SystemExit("Missing data/nifty200_watchlist.json. Build it first.")
+    return json.loads(WATCHLIST_JSON.read_text(encoding="utf-8"))
+
+
+def chunks(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def fetch_ltp_v3(token: str, keys: list[str]) -> dict:
+    url = "https://api.upstox.com/v3/market-quote/ltp"
+    r = requests.get(
+        url,
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+        params={"instrument_key": ",".join(keys)},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json().get("data", {})
+
+
+def token_to_symbol(instrument_token: str) -> Optional[str]:
+    return instrument_token.split(":", 1)[1].strip() if ":" in instrument_token else None
+
+
+def ms_to_dt_local(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone()
+
+
+def symbol_in_cooldown(symbol: str, cooldown_until: Dict[str, datetime]) -> bool:
+    until = cooldown_until.get(symbol)
+    return bool(until and now_ist() < until)
+
+
+def breakout_confirmed(prev_candle, candle, bias: str) -> bool:
+    if prev_candle is None:
+        return False
+    if bias == "LONG":
+        return candle.close > prev_candle.high
+    return candle.close < prev_candle.low
+
+
+def candle_body_ratio(candle) -> float:
+    rng = max(candle.high - candle.low, 1e-9)
+    body = abs(candle.close - candle.open)
+    return body / rng
+
+
+def is_strong_entry_candle(prev_candle, candle, bias: str, min_body_ratio: float) -> bool:
+    if prev_candle is None:
+        return False
+    if candle_body_ratio(candle) < min_body_ratio:
+        return False
+    if bias == "LONG":
+        return candle.close > candle.open and candle.close > prev_candle.high
+    return candle.close < candle.open and candle.close < prev_candle.low
+
+
+def breakout_chase_pct(prev_candle, candle, bias: str) -> float:
+    if prev_candle is None:
+        return 0.0
+    if bias == "LONG":
+        if candle.close <= prev_candle.high:
+            return 0.0
+        return (candle.close - prev_candle.high) / max(prev_candle.high, 1e-9)
+
+    if candle.close >= prev_candle.low:
+        return 0.0
+    return (prev_candle.low - candle.close) / max(prev_candle.low, 1e-9)
+
+
+def too_close_to_recent_extreme(info: dict, candle, bias: str, pct_threshold: float) -> bool:
+    if pct_threshold <= 0:
+        return False
+
+    recent_highs = info.get("recent_highs", [])
+    recent_lows = info.get("recent_lows", [])
+
+    if bias == "LONG":
+        if not recent_highs:
+            return False
+        recent_high = max(recent_highs)
+        dist_to_high_pct = (recent_high - candle.close) / max(candle.close, 1e-9)
+        return dist_to_high_pct < pct_threshold
+
+    if not recent_lows:
+        return False
+    recent_low = min(recent_lows)
+    dist_to_low_pct = (candle.close - recent_low) / max(candle.close, 1e-9)
+    return dist_to_low_pct < pct_threshold
+
+
+def get_market_snapshot(token: str) -> Dict[str, Any]:
+    try:
+        data = fetch_ltp_v3(token, [INDEX_KEY])
+        if not data:
+            return {"trend": "NEUTRAL", "regime": "CHOPPY", "pct": 0.0}
+
+        _, payload = next(iter(data.items()))
+        ltp = float(payload.get("last_price") or 0.0)
+        cp = float(payload.get("cp") or 0.0)
+
+        if ltp <= 0 or cp <= 0:
+            return {"trend": "NEUTRAL", "regime": "CHOPPY", "pct": 0.0}
+
+        pct = (ltp - cp) / cp
+
+        if pct >= MARKET_TREND_THRESHOLD:
+            trend = "BULLISH"
+        elif pct <= -MARKET_TREND_THRESHOLD:
+            trend = "BEARISH"
+        else:
+            trend = "NEUTRAL"
+
+        ap = abs(pct)
+        if ap >= TRENDING_REGIME_PCT:
+            regime = "TRENDING"
+        elif ap <= CHOPPY_REGIME_PCT:
+            regime = "CHOPPY"
+        else:
+            regime = "NORMAL"
+
+        return {"trend": trend, "regime": regime, "pct": pct}
+    except Exception:
+        return {"trend": "NEUTRAL", "regime": "CHOPPY", "pct": 0.0}
+
+
+def settings_for_regime(regime: str) -> Dict[str, float]:
+    if regime == "TRENDING":
+        return {
+            "min_abs_move_pct": 0.4,
+            "long_min_abs_move_pct": 0.4,
+            "short_min_abs_move_pct": 0.4,
+            "max_abs_move_pct": 1.8,
+            "ema_gap_pct": 0.0,
+            "entry_body_ratio_min": 0.30,
+            "max_breakout_chase_pct": 0.008,
+            "recent_extreme_pct": 0.0,
+            "early_breakout_slack": 0.0015,
+            "trailing_start_pct_early": 0.005,
+            "trailing_buffer_pct_early": 0.002,
+            "trailing_start_pct_confirmed": 0.007,
+            "trailing_buffer_pct_confirmed": 0.002,
+            "confidence_threshold": 0.48,
+        }
+
+    if regime == "CHOPPY":
+        return {
+            "min_abs_move_pct": 0.8,
+            "long_min_abs_move_pct": 0.8,
+            "short_min_abs_move_pct": 0.8,
+            "max_abs_move_pct": 1.4,
+            "ema_gap_pct": 0.0002,
+            "entry_body_ratio_min": 0.50,
+            "max_breakout_chase_pct": 0.004,
+            "recent_extreme_pct": 0.0025,
+            "early_breakout_slack": 0.0,
+            "trailing_start_pct_early": 0.007,
+            "trailing_buffer_pct_early": 0.002,
+            "trailing_start_pct_confirmed": 0.008,
+            "trailing_buffer_pct_confirmed": 0.002,
+            "confidence_threshold": 0.65,
+        }
+
+    return {
+        "min_abs_move_pct": 0.5,
+        "long_min_abs_move_pct": 0.5,
+        "short_min_abs_move_pct": 0.5,
+        "max_abs_move_pct": 1.6,
+        "ema_gap_pct": 0.0001,
+        "entry_body_ratio_min": 0.35,
+        "max_breakout_chase_pct": 0.006,
+        "recent_extreme_pct": 0.001,
+        "early_breakout_slack": 0.0010,
+        "trailing_start_pct_early": 0.006,
+        "trailing_buffer_pct_early": 0.002,
+        "trailing_start_pct_confirmed": 0.007,
+        "trailing_buffer_pct_confirmed": 0.002,
+        "confidence_threshold": 0.55,
+    }
+
+
+def entry_type_for_signal(prev_candle, candle, bias: str, fast: float, slow: float, cfg: Dict[str, float]) -> Optional[str]:
+    if prev_candle is None:
+        return None
+
+    confirmed = breakout_confirmed(prev_candle, candle, bias)
+    slack = cfg["early_breakout_slack"]
+
+    if bias == "LONG":
+        early_breakout = candle.close >= prev_candle.high * (1.0 - slack)
+        ema_ready = fast >= slow
+    else:
+        early_breakout = candle.close <= prev_candle.low * (1.0 + slack)
+        ema_ready = fast <= slow
+
+    if confirmed and ema_ready:
+        return "CONFIRMED"
+    if early_breakout and ema_ready:
+        return "EARLY"
+    return None
+
+
+def confidence_score(info: dict, candle, fast: float, slow: float, entry_type: str) -> float:
+    price = max(candle.close, 1e-9)
+    ema_gap = abs(fast - slow) / price
+    body = candle_body_ratio(candle)
+    move_strength = min(abs(info["pct"]) / 1.8, 1.0)
+    vol_strength = min(math.log1p(max(info["vol"], 1.0)) / 16.0, 1.0)
+    ema_strength = min(ema_gap / 0.003, 1.0)
+
+    base = (
+        0.30 * move_strength +
+        0.20 * vol_strength +
+        0.25 * ema_strength +
+        0.25 * body
+    )
+
+    if entry_type == "CONFIRMED":
+        base += 0.10
+
+    return min(base, 1.0)
+
+
+def size_multiplier(confidence: float, regime: str) -> float:
+    if regime == "CHOPPY":
+        if confidence >= 0.80:
+            return 1.00
+        if confidence >= 0.65:
+            return 0.85
+        return 0.60
+
+    if confidence >= 0.85:
+        return 1.35
+    if confidence >= 0.70:
+        return 1.15
+    if confidence >= 0.55:
+        return 1.00
+    return 0.75
+
+
+def pick_top_candidates_bi_directional(
+    token: str,
+    sym_to_key: Dict[str, str],
+    cooldown_until: Dict[str, datetime],
+    market_trend: str,
+    cfg: Dict[str, float],
+    top_k: int = TOP_K_MONITOR,
+) -> List[Tuple[float, str, str, str, float, int, float, float]]:
+    candidates = []
+
+    print("🔍 Running fresh scan...")
+    print(f"🌍 Market trend filter: {market_trend}")
+
+    for batch in chunks(list(sym_to_key.values()), BATCH_SIZE):
+        data = fetch_ltp_v3(token, batch)
+
+        for inst_token, v in data.items():
+            sym = token_to_symbol(inst_token)
+            if not sym or symbol_in_cooldown(sym, cooldown_until):
+                continue
+
+            inst_key = sym_to_key.get(sym)
+            if not inst_key:
+                continue
+
+            ltp = float(v.get("last_price") or 0.0)
+            cp = float(v.get("cp") or 0.0)
+            vol = float(v.get("volume") or 0.0)
+
+            if ltp <= 0 or cp <= 0:
+                continue
+            if ltp < MIN
