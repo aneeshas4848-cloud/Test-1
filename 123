@@ -1,0 +1,207 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Optional, Literal, List
+
+Side = Literal["LONG", "SHORT"]
+ProfitLockMode = Literal["fixed", "ladder", "trailing"]
+
+
+@dataclass
+class Position:
+    symbol: str
+    side: Side
+    entry_time: datetime
+    entry_price: float
+    qty: int
+    stop_loss: float
+    take_profit: Optional[float] = None
+
+    profit_lock_mode: ProfitLockMode = "trailing"
+    profit_trailing_start_pct: float = 0.007
+    profit_trailing_buffer_pct: float = 0.002
+
+    best_price: Optional[float] = None
+    max_profit_pct: float = 0.0
+
+    is_open: bool = True
+    exit_time: Optional[datetime] = None
+    exit_price: Optional[float] = None
+    exit_reason: Optional[str] = None
+
+    def pnl(self) -> float:
+        if self.exit_price is None:
+            return 0.0
+
+        if self.side == "LONG":
+            return (self.exit_price - self.entry_price) * self.qty
+
+        return (self.entry_price - self.exit_price) * self.qty
+
+    def current_profit_pct(self, price: float) -> float:
+        if self.side == "LONG":
+            return (price - self.entry_price) / self.entry_price
+
+        return (self.entry_price - price) / self.entry_price
+
+    def update_best_price(self, price: float):
+        p = self.current_profit_pct(price)
+
+        self.max_profit_pct = max(self.max_profit_pct, p)
+
+        if self.best_price is None:
+            self.best_price = price
+            return
+
+        if self.side == "LONG":
+            self.best_price = max(self.best_price, price)
+        else:
+            self.best_price = min(self.best_price, price)
+
+
+class PaperBroker:
+
+    def __init__(self):
+        self.positions: Dict[str, Position] = {}
+
+    def open_positions(self) -> List[Position]:
+        return [p for p in self.positions.values() if p.is_open]
+
+    def open_count(self) -> int:
+        return len(self.open_positions())
+
+    def has_open_position(self, symbol: str) -> bool:
+        p = self.positions.get(symbol)
+        return bool(p and p.is_open)
+
+    def open_long(
+        self,
+        symbol: str,
+        ts: datetime,
+        price: float,
+        qty: int,
+        stop_loss: float,
+        take_profit: Optional[float] = None,
+        profit_lock_mode: ProfitLockMode = "trailing",
+        profit_trailing_start_pct: float = 0.007,
+        profit_trailing_buffer_pct: float = 0.002,
+    ):
+
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            side="LONG",
+            entry_time=ts,
+            entry_price=price,
+            qty=qty,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            profit_lock_mode=profit_lock_mode,
+            profit_trailing_start_pct=profit_trailing_start_pct,
+            profit_trailing_buffer_pct=profit_trailing_buffer_pct,
+            best_price=price,
+        )
+
+    def open_short(
+        self,
+        symbol: str,
+        ts: datetime,
+        price: float,
+        qty: int,
+        stop_loss: float,
+        take_profit: Optional[float] = None,
+        profit_lock_mode: ProfitLockMode = "trailing",
+        profit_trailing_start_pct: float = 0.007,
+        profit_trailing_buffer_pct: float = 0.002,
+    ):
+
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            side="SHORT",
+            entry_time=ts,
+            entry_price=price,
+            qty=qty,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            profit_lock_mode=profit_lock_mode,
+            profit_trailing_start_pct=profit_trailing_start_pct,
+            profit_trailing_buffer_pct=profit_trailing_buffer_pct,
+            best_price=price,
+        )
+
+    def close(self, symbol: str, ts: datetime, price: float, reason: str):
+
+        p = self.positions.get(symbol)
+
+        if not p or not p.is_open:
+            return None
+
+        p.is_open = False
+        p.exit_time = ts
+        p.exit_price = price
+        p.exit_reason = reason
+
+        return p
+
+    def check_exits(
+        self,
+        symbol: str,
+        ts: datetime,
+        price: float,
+        is_candle_close: bool = False,
+    ):
+
+        p = self.positions.get(symbol)
+
+        if not p or not p.is_open:
+            return None
+
+        p.update_best_price(price)
+
+        if p.side == "LONG":
+
+            if price <= p.stop_loss:
+                return self.close(symbol, ts, price, "STOP_LOSS")
+
+        else:
+
+            if price >= p.stop_loss:
+                return self.close(symbol, ts, price, "STOP_LOSS")
+
+        if p.profit_lock_mode == "trailing":
+
+            if p.max_profit_pct >= p.profit_trailing_start_pct:
+
+                if p.side == "LONG":
+
+                    trailing_stop = p.best_price * (
+                        1 - p.profit_trailing_buffer_pct
+                    )
+
+                    p.stop_loss = max(p.stop_loss, trailing_stop)
+
+                    if price <= p.stop_loss:
+                        return self.close(
+                            symbol,
+                            ts,
+                            price,
+                            "TRAILING_STOP",
+                        )
+
+                else:
+
+                    trailing_stop = p.best_price * (
+                        1 + p.profit_trailing_buffer_pct
+                    )
+
+                    p.stop_loss = min(p.stop_loss, trailing_stop)
+
+                    if price >= p.stop_loss:
+                        return self.close(
+                            symbol,
+                            ts,
+                            price,
+                            "TRAILING_STOP",
+                        )
+
+        return None
