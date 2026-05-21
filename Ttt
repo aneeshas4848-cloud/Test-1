@@ -1,0 +1,22 @@
+for pos in broker.open_positions():
+    inst_key = load_watchlist_symbol_to_key().get(pos.symbol)
+    if inst_key and inst_key not in by_key:
+        by_key[inst_key] = {
+            "symbol": pos.symbol,
+            "bias": pos.side,
+            "score": 0.0,
+            "ltp": pos.entry_price,
+            "max_shares": pos.qty,
+            "pct": 0.0,
+            "vol": 0.0,
+            "builder": CandleBuilder(timeframe_minutes=TIMEFRAME_MINUTES),
+            "strat": EMACrossoverStrategy(fast=9, slow=21),
+            "focus_candle_count": 0,
+            "disabled": False,
+            "prev_candle": None,
+            "recent_low": None,
+            "recent_highs": [],
+            "recent_lows": [],
+        }
+
+instrument_keys = list(by_key.keys())
